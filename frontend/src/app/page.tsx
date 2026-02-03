@@ -1,33 +1,18 @@
 "use client";
 
-import React, { useState } from "react";
-import ModeSelector from "../components/ModeSelector";
-import AudioCapture from "../components/AudioCapture";
-import TranscriptPaste from "../components/TranscriptPaste";
-import ResultDisplay from "../components/ResultDisplay";
-import { ProcessingResult } from "./lib/types";
-import { v4 as uuidv4 } from "uuid";
 import { Shield } from "lucide-react";
 import Link from "next/link";
 import { ModeToggle } from "../components/mode-toggle";
+import {
+  Card,
+  CardContent,
+  CardHeader,
+  CardTitle,
+  CardDescription,
+} from "../components/ui/card";
+import { Mic, FileText } from "lucide-react";
 
 export default function Home() {
-  const [mode, setMode] = useState<
-    "idle" | "audio" | "transcript" | "complete"
-  >("idle");
-  const [result, setResult] = useState<ProcessingResult | null>(null);
-  const [sessionId] = useState(() => uuidv4());
-
-  const handleComplete = (res: ProcessingResult) => {
-    setResult(res);
-    setMode("complete");
-  };
-
-  const reset = () => {
-    setMode("idle");
-    setResult(null);
-  };
-
   return (
     <div className="min-h-screen bg-background text-foreground font-sans selection:bg-primary/30">
       {/* Premium Header */}
@@ -48,57 +33,65 @@ export default function Home() {
       </header>
 
       <main className="container mx-auto px-4 py-12 md:py-24">
-        {mode === "idle" && (
-          <div className="space-y-12 max-w-4xl mx-auto text-center">
-            <div className="space-y-4 animate-in fade-in slide-in-from-top-4 duration-1000">
-              <h1 className="text-4xl md:text-7xl font-black tracking-tighter leading-[1.1]">
-                Meetings summarized. <br />
-                <span className="text-transparent bg-clip-text bg-gradient-to-r from-primary to-sky-500">
-                  Zero data left behind.
-                </span>
-              </h1>
-              <p className="text-lg md:text-xl text-muted-foreground max-w-2xl mx-auto font-medium">
-                The privacy-first AI assistant for real-time duplex audio
-                capture and instant insight delivery.
-              </p>
-            </div>
-            <ModeSelector onSelect={setMode} />
+        <div className="space-y-12 max-w-4xl mx-auto text-center">
+          <div className="space-y-4 animate-in fade-in slide-in-from-top-4 duration-1000">
+            <h1 className="text-4xl md:text-7xl font-black tracking-tighter leading-[1.1]">
+              Meetings summarized. <br />
+              <span className="text-transparent bg-clip-text bg-gradient-to-r from-primary to-sky-500">
+                Zero data left behind.
+              </span>
+            </h1>
+            <p className="text-lg md:text-xl text-muted-foreground max-w-2xl mx-auto font-medium">
+              The privacy-first AI assistant for real-time duplex audio capture
+              and instant insight delivery.
+            </p>
           </div>
-        )}
 
-        {mode === "audio" && (
-          <div className="animate-in fade-in duration-500">
-            <AudioCapture
-              sessionId={sessionId}
-              onComplete={handleComplete}
-              onCancel={reset}
-            />
+          <div className="flex flex-col md:flex-row gap-8 justify-center items-center py-12 px-4 animate-in fade-in slide-in-from-bottom-4 duration-700">
+            <Link href="/record-meeting" className="w-full max-w-[350px]">
+              <Card className="cursor-pointer hover:border-primary/50 transition-all hover:scale-105 group h-full">
+                <CardHeader className="text-center">
+                  <div className="mx-auto w-16 h-16 bg-primary/10 rounded-full flex items-center justify-center mb-4 group-hover:bg-primary/20 transition-colors">
+                    <Mic className="w-8 h-8 text-primary" />
+                  </div>
+                  <CardTitle>Record Meeting</CardTitle>
+                  <CardDescription>
+                    Capture live mic and system audio for instant transcription.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="text-center text-sm text-muted-foreground italic">
+                  Best for Zoom, Google Meet, or physical meetings.
+                </CardContent>
+              </Card>
+            </Link>
+
+            <Link href="/paste-transcript" className="w-full max-w-[350px]">
+              <Card className="cursor-pointer hover:border-primary/50 transition-all hover:scale-105 group h-full">
+                <CardHeader className="text-center">
+                  <div className="mx-auto w-16 h-16 bg-secondary/10 rounded-full flex items-center justify-center mb-4 group-hover:bg-secondary/20 transition-colors">
+                    <FileText className="w-8 h-8 text-secondary-foreground" />
+                  </div>
+                  <CardTitle>Paste Transcript</CardTitle>
+                  <CardDescription>
+                    Already have a transcript? Skip the audio and analyze
+                    directly.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="text-center text-sm text-muted-foreground italic">
+                  Supports .txt, .md, and direct text paste.
+                </CardContent>
+              </Card>
+            </Link>
           </div>
-        )}
-
-        {mode === "transcript" && (
-          <div className="animate-in fade-in duration-500">
-            <TranscriptPaste onComplete={handleComplete} onCancel={reset} />
-          </div>
-        )}
-
-        {mode === "complete" && result && (
-          <ResultDisplay result={result} onReset={reset} />
-        )}
+        </div>
       </main>
 
       {/* Modern Footer */}
       <footer className="border-t py-12 bg-muted/20">
         <div className="container mx-auto px-4 text-center space-y-4">
           <p className="text-xs font-medium text-muted-foreground uppercase tracking-[0.2em]">
-            Built by Safwan & Omar
+            Beta version for internal testing only — not intended for release
           </p>
-          <div className="flex justify-center gap-4 text-[10px] text-muted-foreground font-bold">
-            <span>WHISPER-1</span>
-            <span>GPT-4O</span>
-            <span>SENDGRID</span>
-            <span>TAILWIND 4</span>
-          </div>
         </div>
       </footer>
     </div>

@@ -153,12 +153,17 @@ export default function TranscriptPaste({
   return (
     <Card className="max-w-3xl mx-auto animate-in fade-in slide-in-from-bottom-4 duration-500">
       <CardHeader>
-        <CardTitle className="flex items-center gap-2">
-          <FileText className="text-secondary-foreground" /> Paste Transcript
-        </CardTitle>
-        <CardDescription>
-          Analyze existing meeting notes or transcripts instantly.
-        </CardDescription>
+        <div className="flex justify-between items-start mb-2">
+          <div>
+            <CardTitle className="flex items-center gap-2">
+              <FileText className="text-secondary-foreground" /> Paste
+              Transcript
+            </CardTitle>
+            <CardDescription>
+              Analyze existing meeting notes or transcripts instantly.
+            </CardDescription>
+          </div>
+        </div>
       </CardHeader>
       <CardContent className="space-y-6">
         <div className="space-y-2">
@@ -186,7 +191,7 @@ export default function TranscriptPaste({
           <textarea
             value={transcript}
             onChange={(e) => setTranscript(e.target.value)}
-            placeholder="Paste your meeting text here... (Supports 30,000+ characters)"
+            placeholder="Paste your meeting text here... (Supports more than  30,000 characters)"
             className="w-full h-80 p-4 rounded-md border border-input bg-background text-sm font-mono resize-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           />
           <div className="text-[10px] text-muted-foreground text-right uppercase tracking-wider font-bold">

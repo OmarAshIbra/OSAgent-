@@ -43,6 +43,7 @@ export interface ParticipantResult extends Participant {
 
 export interface ProcessingResult {
   meeting_summary: string;
+  transcript: string;
   participants: ParticipantResult[];
 }
 

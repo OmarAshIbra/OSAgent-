@@ -1,5 +1,7 @@
 import { WebSocketMessage, Participant } from "./types";
 
+export type ConnectionState = "connected" | "reconnecting" | "disconnected" | "error";
+
 export class DuplexAudioRecorder {
   private micStream: MediaStream | null = null;
   private systemStream: MediaStream | null = null;
@@ -8,17 +10,38 @@ export class DuplexAudioRecorder {
   private ws: WebSocket | null = null;
   private onMessageCallback: (msg: WebSocketMessage) => void;
   private onLevelsChange: (levels: { mic: number; system: number }) => void;
+  private onConnectionChange: (state: ConnectionState) => void;
   private audioCtx: AudioContext | null = null;
   private analyserMic: AnalyserNode | null = null;
   private analyserSys: AnalyserNode | null = null;
   private animationId: number | null = null;
 
+  // Mute functionality
+  private gainNode: GainNode | null = null;
+  private isMuted: boolean = false;
+
+  // Connection resilience
+  private connectionState: ConnectionState = "disconnected";
+  private reconnectAttempts: number = 0;
+  private maxReconnectAttempts: number = 3;
+  private reconnectTimeout: number | null = null;
+  private chunkBuffer: Blob[] = [];
+  private maxBufferSize: number = 50; // ~50 seconds of audio
+  private sequenceNumber: number = 0;
+
+  // Session info for reconnection
+  private sessionId: string = "";
+  private meetingTitle: string = "";
+  private meetingParticipants: Participant[] = [];
+
   constructor(
     onMessage: (msg: WebSocketMessage) => void,
     onLevels: (levels: { mic: number; system: number }) => void,
+    onConnectionChange: (state: ConnectionState) => void,
   ) {
     this.onMessageCallback = onMessage;
     this.onLevelsChange = onLevels;
+    this.onConnectionChange = onConnectionChange;
   }
 
   async start(
@@ -29,6 +52,11 @@ export class DuplexAudioRecorder {
     preSystemStream?: MediaStream | null,
   ): Promise<void> {
     try {
+      // Store session info for reconnection
+      this.sessionId = sessionId;
+      this.meetingTitle = title;
+      this.meetingParticipants = participants;
+
       // 1. Get streams if not provided
       this.micStream =
         preMicStream ||
@@ -46,7 +74,7 @@ export class DuplexAudioRecorder {
         );
       }
 
-      // 3. Mix using AudioContext
+      // 3. Mix using AudioContext with GainNode for mute control
       this.audioCtx = new (
         window.AudioContext || (window as any).webkitAudioContext
       )();
@@ -54,8 +82,12 @@ export class DuplexAudioRecorder {
 
       const micSource = this.audioCtx.createMediaStreamSource(this.micStream);
       this.analyserMic = this.audioCtx.createAnalyser();
-      micSource.connect(this.analyserMic);
-      micSource.connect(dest);
+      this.gainNode = this.audioCtx.createGain();
+
+      // Route: micSource → gainNode → analyser → destination
+      micSource.connect(this.gainNode);
+      this.gainNode.connect(this.analyserMic);
+      this.gainNode.connect(dest);
 
       const sysSource = this.audioCtx.createMediaStreamSource(
         this.systemStream,
@@ -69,36 +101,56 @@ export class DuplexAudioRecorder {
       // 4. Start level monitoring
       this.startLevelMonitoring();
 
-      // 5. WebSocket connection
-      // For local development use ws://localhost:8000
+      // 5. Setup WebSocket connection with reconnection logic
+      await this.setupWebSocket();
+    } catch (err: any) {
+      this.cleanup();
+      throw err;
+    }
+  }
+
+  private async setupWebSocket(): Promise<void> {
+    return new Promise((resolve, reject) => {
       const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
       const host =
         process.env.NEXT_PUBLIC_API_URL?.replace(/^https?:\/\//, "") ||
         "localhost:8000";
-      this.ws = new WebSocket(`${protocol}//${host}/ws/record/${sessionId}`);
+
+      this.ws = new WebSocket(`${protocol}//${host}/ws/record/${this.sessionId}`);
 
       this.ws.onopen = () => {
+        console.log("WebSocket connected");
+        this.setConnectionState("connected");
+        this.reconnectAttempts = 0;
+
         // Send initial metadata
         this.ws?.send(
           JSON.stringify({
             type: "metadata",
-            title,
-            participants,
+            title: this.meetingTitle,
+            participants: this.meetingParticipants,
           }),
         );
 
-        // 6. Record mixed stream
-        this.recorder = new MediaRecorder(this.mixedStream!, {
-          mimeType: "audio/webm",
-        });
+        // Send any buffered chunks
+        this.flushChunkBuffer();
 
-        this.recorder.ondataavailable = (e) => {
-          if (e.data.size > 0 && this.ws?.readyState === WebSocket.OPEN) {
-            this.ws.send(e.data);
-          }
-        };
+        // Start recording if not already started
+        if (!this.recorder || this.recorder.state === "inactive") {
+          this.recorder = new MediaRecorder(this.mixedStream!, {
+            mimeType: "audio/webm",
+          });
 
-        this.recorder.start(1000); // 1-second chunks
+          this.recorder.ondataavailable = (e) => {
+            if (e.data.size > 0) {
+              this.handleAudioChunk(e.data);
+            }
+          };
+
+          this.recorder.start(1000); // 1-second chunks
+        }
+
+        resolve();
       };
 
       this.ws.onmessage = (e) => {
@@ -108,19 +160,121 @@ export class DuplexAudioRecorder {
 
       this.ws.onerror = (e) => {
         console.error("WebSocket error:", e);
-        this.onMessageCallback({
-          stage: "error",
-          message: "WebSocket connection failed",
-        });
+        this.setConnectionState("error");
+        reject(new Error("WebSocket connection failed"));
       };
 
-      this.ws.onclose = () => {
-        console.log("WebSocket closed");
+      this.ws.onclose = (e) => {
+        console.log("WebSocket closed:", e.code, e.reason);
+
+        // Don't reconnect if this was a normal closure or we're stopping
+        if (e.code === 1000 || this.recorder?.state === "inactive") {
+          this.setConnectionState("disconnected");
+          return;
+        }
+
+        // Attempt to reconnect
+        this.handleReconnect();
       };
-    } catch (err: any) {
-      this.cleanup();
-      throw err;
+    });
+  }
+
+  private handleAudioChunk(chunk: Blob): void {
+    this.sequenceNumber++;
+
+    if (this.ws?.readyState === WebSocket.OPEN) {
+      // Send sequence number first, then chunk
+      this.ws.send(JSON.stringify({ type: "chunk_seq", seq: this.sequenceNumber }));
+      this.ws.send(chunk);
+    } else {
+      // Buffer the chunk if not connected
+      this.bufferChunk(chunk);
     }
+  }
+
+  private bufferChunk(chunk: Blob): void {
+    if (this.chunkBuffer.length < this.maxBufferSize) {
+      this.chunkBuffer.push(chunk);
+    } else {
+      console.warn("Chunk buffer full, dropping oldest chunk");
+      this.chunkBuffer.shift();
+      this.chunkBuffer.push(chunk);
+    }
+  }
+
+  private flushChunkBuffer(): void {
+    if (this.chunkBuffer.length === 0) return;
+
+    console.log(`Flushing ${this.chunkBuffer.length} buffered chunks`);
+
+    this.chunkBuffer.forEach((chunk) => {
+      this.sequenceNumber++;
+      this.ws?.send(JSON.stringify({ type: "chunk_seq", seq: this.sequenceNumber }));
+      this.ws?.send(chunk);
+    });
+
+    this.chunkBuffer = [];
+  }
+
+  private handleReconnect(): void {
+    if (this.reconnectAttempts >= this.maxReconnectAttempts) {
+      this.setConnectionState("disconnected");
+      this.onMessageCallback({
+        stage: "error",
+        message: "Connection lost. Unable to reconnect after 3 attempts.",
+      });
+      return;
+    }
+
+    this.setConnectionState("reconnecting");
+    this.reconnectAttempts++;
+
+    // Exponential backoff: 0ms, 2s, 4s
+    const delay = this.reconnectAttempts === 1 ? 0 : (this.reconnectAttempts - 1) * 2000;
+
+    console.log(`Reconnecting (attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts}) in ${delay}ms`);
+
+    this.reconnectTimeout = window.setTimeout(async () => {
+      try {
+        await this.setupWebSocket();
+      } catch (err) {
+        console.error("Reconnection failed:", err);
+        this.handleReconnect(); // Try again
+      }
+    }, delay);
+  }
+
+  private setConnectionState(state: ConnectionState): void {
+    this.connectionState = state;
+    this.onConnectionChange(state);
+  }
+
+  public toggleMute(): boolean {
+    if (!this.gainNode) return this.isMuted;
+
+    this.isMuted = !this.isMuted;
+    this.gainNode.gain.value = this.isMuted ? 0 : 1;
+
+    // Send mute event to backend
+    if (this.ws?.readyState === WebSocket.OPEN) {
+      this.ws.send(
+        JSON.stringify({
+          type: "mute_event",
+          timestamp: Date.now(),
+          muted: this.isMuted,
+        }),
+      );
+    }
+
+    return this.isMuted;
+  }
+
+  public getMuteState(): boolean {
+    return this.isMuted;
+  }
+
+  public getConnectionState(): ConnectionState {
+    return this.connectionState;
   }
 
   private startLevelMonitoring() {
@@ -138,8 +292,9 @@ export class DuplexAudioRecorder {
       const sysLevel =
         dataArraySys.reduce((a, b) => a + b, 0) / dataArraySys.length;
 
+      // Set mic level to 0 if muted for visual feedback
       this.onLevelsChange({
-        mic: Math.min(100, micLevel * 2),
+        mic: this.isMuted ? 0 : Math.min(100, micLevel * 2),
         system: Math.min(100, sysLevel * 2),
       });
 
@@ -160,6 +315,7 @@ export class DuplexAudioRecorder {
 
   private cleanup() {
     if (this.animationId) cancelAnimationFrame(this.animationId);
+    if (this.reconnectTimeout) clearTimeout(this.reconnectTimeout);
 
     this.micStream?.getTracks().forEach((t) => t.stop());
     this.systemStream?.getTracks().forEach((t) => t.stop());
@@ -175,5 +331,9 @@ export class DuplexAudioRecorder {
     this.audioCtx = null;
     this.analyserMic = null;
     this.analyserSys = null;
+    this.gainNode = null;
+    this.chunkBuffer = [];
+    this.reconnectAttempts = 0;
+    this.sequenceNumber = 0;
   }
 }
